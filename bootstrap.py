@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 os.umask(0o077)
 key = os.environ.pop('BUNDLE_KEY')
@@ -18,9 +19,15 @@ if hashlib.sha256(payload).hexdigest() != public_manifest['payload_sha256']:
 with tempfile.TemporaryDirectory(prefix='encrypted-job-', dir='/tmp') as directory:
     destination = Path(directory)
     deps = destination / 'dependencies'
-    subprocess.run([sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check',
-                    '--no-cache-dir', '--only-binary=:all:', '--target', str(deps),
-                    'cryptography==46.0.5'], check=True)
+    # every MPI rank installs it, and one failed PyPI request on any rank aborts the whole job: retried
+    for attempt in range(6):
+        if subprocess.run([sys.executable, '-m', 'pip', 'install', '--disable-pip-version-check',
+                           '--no-cache-dir', '--only-binary=:all:', '--target', str(deps),
+                           'cryptography==46.0.5']).returncode == 0:
+            break
+        if attempt == 5:
+            raise RuntimeError('pip install cryptography failed 6 times')
+        time.sleep(30)
     sys.path.insert(0, str(deps))
     from cryptography.fernet import Fernet
     plaintext = Fernet(key.encode()).decrypt(payload)
